@@ -1,11 +1,10 @@
 #include "glfw_window_handler.hh"
+#include "vulkan/vulkan.hpp"
+#include <limits>
 #include <vulkan/vulkan.hpp>
-#if defined(__INTELLISENSE__) || !defined(USE_CPP20_MODULES)
 #include <vulkan/vulkan_raii.hpp>
-#else
-import vulkan_hpp;
-#endif
 
+#define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
 #include <algorithm> // std::ranges::none_of
@@ -25,6 +24,8 @@ constexpr bool ENABLE_VALIDATION_LAYERS = false;
 constexpr bool ENABLE_VALIDATION_LAYERS = true;
 #endif
 
+// NOTE: Any KHR just menas khronos
+
 // TODO: Understand WHY each step has to be done and write it down
 class HelloTriangleApplication {
 public:
@@ -40,8 +41,10 @@ public:
 private:
   void initVulkan() {
     createInstance();
+    createSurface();
     pickPhysicalDevice();
     createLogicalDeviceAndQueue();
+    createSwapChain();
   }
 
   void mainLoop() {
@@ -53,6 +56,132 @@ private:
       throw std::runtime_error(
           "Tried to utilise window after GlfwWindow deletion");
     }
+  }
+
+  void createSurface() {
+    // There is some stuff in here that only works this simplistically because
+    // glfw interfaces so well with vulkan check
+    // https://docs.vulkan.org/tutorial/latest/03_Drawing_a_triangle/01_Presentation/00_Window_surface.html
+    // for more details
+
+    if (GLFWwindow *window = window_container->get().lock().get()) {
+      VkSurfaceKHR local_surface;
+      if (glfwCreateWindowSurface(*instance, window, nullptr, &local_surface) !=
+          0) {
+        throw std::runtime_error("Failed to create a window surface");
+      }
+      surface = vk::raii::SurfaceKHR(instance, local_surface);
+    }
+  }
+
+  void createSwapChain() {
+    if (instance == nullptr || physical_device == nullptr ||
+        device == nullptr || graphics_queue == nullptr || surface == nullptr)
+      throw std::runtime_error("Instance or physical device not initialised "
+                               "before attempts to use it");
+
+    // The physical device contains info on basic surface capabilities such as
+    // min/max images in the swapchain, min/max width and height of images
+    auto surface_capabilities =
+        physical_device.getSurfaceCapabilitiesKHR(*surface);
+    // Also the available surface formats (pixel format, colour space)
+    std::vector<vk::SurfaceFormatKHR> available_formats =
+        physical_device.getSurfaceFormatsKHR(*surface);
+    // Also presentation modes
+    std::vector<vk::PresentModeKHR> available_present_modes =
+        physical_device.getSurfacePresentModesKHR(*surface);
+
+    // If these different settings, there may be ones that are more optimal than
+    // others
+    //
+    // For surface format: colour depth
+    // Presentation mode: conditions for swapping images to the screen
+    // swap extent: resolution of images in the swapchain
+    //
+    // For each, there is an ideal value in mind
+    assert(!available_formats.empty());
+    bool format_was_chosen = false;
+    vk::SurfaceFormatKHR chosen_swap_surface_format = available_formats[0];
+
+    // WARN: strictly speaking, this code should look for altermative methods,
+    // but im just going to say if it doesnt support BGRA then crash
+    for (vk::SurfaceFormatKHR surf_form : available_formats) {
+      if (surf_form.format == vk::Format::eB8G8R8A8Srgb &&
+          surf_form.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
+        chosen_swap_surface_format = surf_form;
+        format_was_chosen = true;
+        break;
+      }
+    }
+
+    if (!format_was_chosen)
+      throw std::runtime_error(
+          "Device swap chain surface format doesnt support eB8G8R8A8Srgb");
+
+    // WARN: DEV: IF THERE IS SCREEN TEARING THEN IT IS BECUASE HTIS
+    // AUTOMATICALLY CHOOSES THE ONLY GUARANTEED PRESENT MODE
+    vk::PresentModeKHR chosen_present_mode = vk::PresentModeKHR::eFifo;
+
+    // NOTE: for calculating the swap extent, if its current extent isnt the
+    // uint32 max, then its swap extend is just the screen size
+    std::pair<int, int> extent = {-1, -1};
+
+    if (surface_capabilities.currentExtent.width !=
+        std::numeric_limits<uint32_t>::max()) {
+      extent = {static_cast<int>(surface_capabilities.currentExtent.width),
+                static_cast<int>(surface_capabilities.currentExtent.height)};
+    } else {
+      int width, height;
+      if (GLFWwindow *window = window_container->get().lock().get()) {
+        glfwGetFramebufferSize(window, &width, &height);
+
+        // Clamping between min and max, then casting
+        extent.first = static_cast<int>(std::clamp<uint32_t>(
+            width, surface_capabilities.minImageExtent.width,
+            surface_capabilities.maxImageExtent.width));
+        extent.second = static_cast<int>(std::clamp<uint32_t>(
+            height, surface_capabilities.minImageExtent.height,
+            surface_capabilities.maxImageExtent.height));
+      }
+    }
+
+    if (extent.first < 0 || extent.second < 0)
+      throw std::runtime_error("Swap Extent couldn't be assigned");
+
+    vk::Extent2D chosen_swap_extent = {static_cast<uint32_t>(extent.first),
+                                       static_cast<uint32_t>(extent.second)};
+
+    // Relevant values:
+    // surface_capabilities
+    // chosen_swap_surface_format
+    // chosen_present_mode
+    // chosen_swap_extent
+
+    uint32_t swap_chain_image_count =
+        (surface_capabilities.maxImageCount == 0)
+            ? surface_capabilities.maxImageCount
+            : std::clamp<uint32_t>(surface_capabilities.maxImageCount + 1,
+                                   surface_capabilities.minImageCount,
+                                   surface_capabilities.maxImageCount);
+
+    vk::SwapchainCreateInfoKHR swapChainCreateInfo{
+        .surface = *surface,
+        .minImageCount = swap_chain_image_count,
+        .imageFormat = chosen_swap_surface_format.format,
+        .imageColorSpace = chosen_swap_surface_format.colorSpace,
+        .imageExtent = chosen_swap_extent,
+        .imageArrayLayers = 1,
+        // This may change if you're, for exmaple, going to do post processing
+        // on an image
+        .imageUsage = vk::ImageUsageFlagBits::eColorAttachment,
+        .imageSharingMode = vk::SharingMode::eExclusive,
+        .preTransform = surface_capabilities.currentTransform,
+        .compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque,
+        .presentMode = chosen_present_mode,
+        .clipped = true};
+
+    swap_chain = vk::raii::SwapchainKHR(device, swapChainCreateInfo);
+    swap_chain_images = swap_chain.getImages();
   }
 
   void createLogicalDeviceAndQueue() {
@@ -67,23 +196,19 @@ private:
     std::vector<vk::QueueFamilyProperties> queue_fam_properties =
         physical_device.getQueueFamilyProperties();
 
-    auto graphics_queue_fam_property =
-        std::ranges::find_if(queue_fam_properties, [](auto const &q_fam_prop) {
-          return (q_fam_prop.queueFlags & vk::QueueFlagBits::eGraphics) !=
-                 static_cast<vk::QueueFlags>(0);
-        });
-    auto graphicsIndex = static_cast<uint32_t>(std::distance(
-        queue_fam_properties.begin(), graphics_queue_fam_property));
+    // Apparently thats a bitwise NOT
+    uint32_t queue_index = ~0;
 
-    // Queue Priority (requried even if there is one queue)
-    float queuePriority = 0.5;
-
-    // The struct for specifying the number of queues for a single queue
-    // family
-    vk::DeviceQueueCreateInfo device_queue_create_info{
-        .queueFamilyIndex = graphicsIndex,
-        .queueCount = 1,
-        .pQueuePriorities = &queuePriority};
+    // TODO: understand what is happening here
+    for (uint32_t q_fam_prop_index = 0;
+         q_fam_prop_index < queue_fam_properties.size(); q_fam_prop_index++) {
+      if ((queue_fam_properties[q_fam_prop_index].queueFlags &
+           vk::QueueFlagBits::eGraphics) &&
+          physical_device.getSurfaceSupportKHR(q_fam_prop_index, *surface)) {
+        queue_index = q_fam_prop_index;
+        break;
+      }
+    }
 
     // DEVICE FEATURES
     vk::PhysicalDeviceFeatures device_features;
@@ -103,6 +228,14 @@ private:
             {.dynamicRendering = true},
             {.extendedDynamicState = true}};
 
+    // Queue Priority (requried even if there is one queue)
+    float queuePriority = 0.5;
+    // The struct for specifying the number of queues for a single queue
+    // family
+    vk::DeviceQueueCreateInfo device_queue_create_info{
+        .queueFamilyIndex = queue_index,
+        .queueCount = 1,
+        .pQueuePriorities = &queuePriority};
     // With all the info gathered, and the required device extensions, create
     // the logical device
     vk::DeviceCreateInfo device_create_info{
@@ -118,7 +251,7 @@ private:
     };
 
     device = vk::raii::Device(physical_device, device_create_info);
-    graphics_queue = vk::raii::Queue(device, graphicsIndex, 0);
+    graphics_queue = vk::raii::Queue(device, queue_index, 0);
   }
 
   /*
@@ -294,9 +427,12 @@ private:
 
   vk::raii::Context context;
   vk::raii::Instance instance = nullptr;
+  vk::raii::SurfaceKHR surface = nullptr;
   vk::raii::PhysicalDevice physical_device = nullptr;
   vk::raii::Device device = nullptr;
   vk::raii::Queue graphics_queue = nullptr;
+  vk::raii::SwapchainKHR swap_chain = nullptr;
+  std::vector<vk::Image> swap_chain_images;
 };
 
 int main() {
