@@ -25,6 +25,7 @@ constexpr bool ENABLE_VALIDATION_LAYERS = false;
 constexpr bool ENABLE_VALIDATION_LAYERS = true;
 #endif
 
+// TODO: Understand WHY each step has to be done and write it down
 class HelloTriangleApplication {
 public:
   HelloTriangleApplication(GlfwWindowContainer *window_container) {
@@ -40,6 +41,7 @@ private:
   void initVulkan() {
     createInstance();
     pickPhysicalDevice();
+    createLogicalDeviceAndQueue();
   }
 
   void mainLoop() {
@@ -51,6 +53,72 @@ private:
       throw std::runtime_error(
           "Tried to utilise window after GlfwWindow deletion");
     }
+  }
+
+  void createLogicalDeviceAndQueue() {
+    // First, you select the list of queues you're interested in via their
+    // properties.
+    // for this, we only care about graphics capabilities
+    if (instance == nullptr || physical_device == nullptr)
+      throw std::runtime_error("Instance or physical device not initialised "
+                               "before attempts to use it");
+
+    // TODO: redo in a way that makes sense
+    std::vector<vk::QueueFamilyProperties> queue_fam_properties =
+        physical_device.getQueueFamilyProperties();
+
+    auto graphics_queue_fam_property =
+        std::ranges::find_if(queue_fam_properties, [](auto const &q_fam_prop) {
+          return (q_fam_prop.queueFlags & vk::QueueFlagBits::eGraphics) !=
+                 static_cast<vk::QueueFlags>(0);
+        });
+    auto graphicsIndex = static_cast<uint32_t>(std::distance(
+        queue_fam_properties.begin(), graphics_queue_fam_property));
+
+    // Queue Priority (requried even if there is one queue)
+    float queuePriority = 0.5;
+
+    // The struct for specifying the number of queues for a single queue
+    // family
+    vk::DeviceQueueCreateInfo device_queue_create_info{
+        .queueFamilyIndex = graphicsIndex,
+        .queueCount = 1,
+        .pQueuePriorities = &queuePriority};
+
+    // DEVICE FEATURES
+    vk::PhysicalDeviceFeatures device_features;
+
+    //  For more modern vulkan features, you must explicity request them
+    //  (anything > 1.0)
+    // The chosen solution for implementing multiply features is through a
+    // structure chain which can point to another structure
+    vk::StructureChain<vk::PhysicalDeviceFeatures2,
+                       vk::PhysicalDeviceVulkan11Features,
+                       vk::PhysicalDeviceVulkan13Features,
+                       vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>
+        featureChain = {
+            {}, // physical device empty for now
+            {.shaderDrawParameters =
+                 true}, // Only choosing this feature from vulkan 11, etc
+            {.dynamicRendering = true},
+            {.extendedDynamicState = true}};
+
+    // With all the info gathered, and the required device extensions, create
+    // the logical device
+    vk::DeviceCreateInfo device_create_info{
+        .pNext = &featureChain.get<
+            vk::PhysicalDeviceFeatures2>(), // Reference to the first structure
+                                            // in the chain rather than the
+                                            // chain itself
+        .queueCreateInfoCount = 1,
+        .pQueueCreateInfos = &device_queue_create_info,
+        .enabledExtensionCount =
+            static_cast<uint32_t>(REQUIRED_DEVICE_EXTENSIONS.size()),
+        .ppEnabledExtensionNames = REQUIRED_DEVICE_EXTENSIONS.data(),
+    };
+
+    device = vk::raii::Device(physical_device, device_create_info);
+    graphics_queue = vk::raii::Queue(device, graphicsIndex, 0);
   }
 
   /*
@@ -115,6 +183,7 @@ private:
     auto available_device_extensions =
         physical_device.enumerateDeviceExtensionProperties();
 
+    // TODO: redo in a way that makes sense
     if (!(std::ranges::all_of(
             REQUIRED_DEVICE_EXTENSIONS,
             [&available_device_extensions](auto const &required_deve_ext) {
@@ -128,6 +197,7 @@ private:
       throw std::runtime_error(
           "The device does not support the right extensions");
 
+    // TODO: redo in a way that makes sense
     // Finally, confirm that it supports all the right features
     auto device_features = physical_device.template getFeatures2<
         vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan11Features,
@@ -225,6 +295,8 @@ private:
   vk::raii::Context context;
   vk::raii::Instance instance = nullptr;
   vk::raii::PhysicalDevice physical_device = nullptr;
+  vk::raii::Device device = nullptr;
+  vk::raii::Queue graphics_queue = nullptr;
 };
 
 int main() {
