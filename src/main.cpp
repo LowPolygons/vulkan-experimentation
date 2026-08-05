@@ -86,8 +86,6 @@ private:
   void createSyncObjects() {
     present_complete_semaphore =
         vk::raii::Semaphore(device, vk::SemaphoreCreateInfo());
-    render_finished_semaphore =
-        vk::raii::Semaphore(device, vk::SemaphoreCreateInfo());
     draw_fence =
         vk::raii::Fence(device, {.flags = vk::FenceCreateFlagBits::eSignaled});
   }
@@ -146,7 +144,7 @@ private:
         .pCommandBuffers = &*command_buffer,
         .signalSemaphoreCount = 1,
         // Which semaphore to signal once it has finished execution
-        .pSignalSemaphores = &*render_finished_semaphore};
+        .pSignalSemaphores = &*render_finished_semaphores[image_index]};
 
     graphics_queue.submit(submit_info, *draw_fence);
 
@@ -156,7 +154,7 @@ private:
     const vk::PresentInfoKHR present_info_khr{
         .waitSemaphoreCount = 1,
         // WHich to wait on
-        .pWaitSemaphores = &*render_finished_semaphore,
+        .pWaitSemaphores = &*render_finished_semaphores[image_index],
         .swapchainCount = 1,
         // Swapchain to present the image to
         .pSwapchains = &*swap_chain,
@@ -669,6 +667,13 @@ private:
     auto swap_chain_info = swap_chain.getDevice();
 
     std::cout << "Swap chain device is " << swap_chain_info << std::endl;
+
+    render_finished_semaphores.clear();
+
+    for (size_t i = 0; i < swap_chain_images.size(); ++i) {
+      render_finished_semaphores.emplace_back(device,
+                                              vk::SemaphoreCreateInfo{});
+    }
   }
 
   void createLogicalDeviceAndQueue() {
@@ -931,7 +936,7 @@ private:
   vk::raii::CommandBuffer command_buffer = nullptr;
 
   vk::raii::Semaphore present_complete_semaphore = nullptr;
-  vk::raii::Semaphore render_finished_semaphore = nullptr;
+  std::vector<vk::raii::Semaphore> render_finished_semaphores;
   vk::raii::Fence draw_fence = nullptr;
 };
 
