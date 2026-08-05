@@ -1,5 +1,6 @@
 #include "glfw_window_handler.hh"
 #include "vulkan/vulkan.hpp"
+#include <fstream>
 #include <limits>
 #include <vulkan/vulkan.hpp>
 #include <vulkan/vulkan_raii.hpp>
@@ -24,6 +25,23 @@ constexpr bool ENABLE_VALIDATION_LAYERS = false;
 constexpr bool ENABLE_VALIDATION_LAYERS = true;
 #endif
 
+std::vector<char> read_shader(const std::string &file_name) {
+  // End of file lets you immediately see the size of the file
+  std::ifstream file(file_name, std::ios::ate | std::ios::binary);
+
+  if (!file.is_open())
+    throw std::runtime_error("Failed to open shader bytecode");
+
+  std::vector<char> buffer(file.tellg());
+
+  file.seekg(0, std::ios::beg);
+  file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+
+  file.close();
+
+  return buffer;
+}
+
 // NOTE: Any KHR just menas khronos
 
 // TODO: Understand WHY each step has to be done and write it down
@@ -45,6 +63,8 @@ private:
     pickPhysicalDevice();
     createLogicalDeviceAndQueue();
     createSwapChain();
+    createImageViews();
+    createGraphicsPipeline();
   }
 
   void mainLoop() {
@@ -56,6 +76,217 @@ private:
       throw std::runtime_error(
           "Tried to utilise window after GlfwWindow deletion");
     }
+  }
+
+  /*
+   * Roughly this is what happens in the graphics pipeline:
+   *
+   * - Given the raw vertex data from the buffers:
+   *
+   *   Input assembler: collects this data, performs operations like repeating
+   * certain elements where necessary without duplicating the vertex data itself
+   *
+   *   Vertex Shader: run for every vertex - applis transformations to turn it
+   * from model space to screen space. Also, per-vertex data is passed down the
+   * pipeline
+   *
+   *   Tessellation shaders: can let you subdivide geomtry based on rules to
+   * increase mesh quality. This is used, for example, to make faces like a
+   * brick wall less flat when nearby
+   *
+   *   Geometry shader: this is run on every triangle, line or point
+   * (primitives) and can discord it, or output more primitives than came in. It
+   * is similar to the tesselation shader but more flexible. It is used LITTLE
+   * nowadays due to performance issues except for integrated intel gpus. Almost
+   * all can be fixed with a modern mesh shader pipeline. This is an entirely
+   * different style of pipeline, like how raytracing is
+   *
+   *   Rasterization: this breaks the primitives into fragments. These are the
+   * actual pixel elements which appear on the framebuffer. As a result,
+   * fragments outside the screen are discarded. Depth testing also happens,
+   * discarding fragements behind others
+   *
+   *   Fragment shader: invoked for every fragment left. It detemines which
+   * framebuffer the fragments are written to, and with what color and depth
+   * values. This can be done with interpolated data from the vertex shader,
+   * which can include texture coordinates, lighting normals
+   *
+   *   Colour blending: applies operations to mix different fragments which map
+   * to the same pixel in the framebuffer. Fragments will overwrite, add or be
+   * mixed based on transparency
+   *
+   * NOTE: Some of these are configurable via arguments but have fixed internal
+   * logic
+   * NOTE: Some of these are programmable
+   *
+   * INPUT ASSEMBLER, RASTERIZATION, COLOUR BLENDING - Configurable but Fixed
+   *
+   * VERTEX SHADER, TESSELLATION, GEOMETRY SHADER, FRAGMENT SHADER -
+   * Programmable
+   *
+   * Some of the programmable stages are optional. Tesselation and geometry can
+   * be disabled if you just draw simple geometry. If you only want depth, you
+   * can disable fragment shaders which is useful for shadow map generation
+   */
+  void createGraphicsPipeline() {
+    if (device == nullptr)
+      throw std::runtime_error(
+          "Tried to create a graphics pipeline before device was initialised");
+
+    auto shader_bytecode = read_shader("slang.spv");
+    vk::raii::ShaderModule shader_module = createShaderModule(shader_bytecode);
+
+    // The use the shader, the pipeline stages need to be assigned via a
+    // structure
+    vk::PipelineShaderStageCreateInfo vertex_shader_stage_info{
+        .stage = vk::ShaderStageFlagBits::eVertex,
+        .module = shader_module,
+        .pName = "vertMain"};
+    vk::PipelineShaderStageCreateInfo frag_shader_stage_info{
+        .stage = vk::ShaderStageFlagBits::eFragment,
+        .module = shader_module,
+        .pName = "fragMain"};
+    std::vector<vk::PipelineShaderStageCreateInfo> shader_stages = {
+        vertex_shader_stage_info, frag_shader_stage_info};
+
+    // Describes the format of the vertex data passed to the shader:
+    // -> Bindings: spacing between data and whether the data is per-vertex or
+    // instance
+    // -> Attribute descriptions: type of the attributes passed to the vertex
+    // shader, which bindinf to load them from and at which offset
+
+    std::vector<vk::DynamicState> dynamic_states = {vk::DynamicState::eViewport,
+                                                    vk::DynamicState::eScissor};
+    vk::PipelineDynamicStateCreateInfo dynamic_state{
+        .dynamicStateCount = static_cast<uint32_t>(dynamic_states.size()),
+        .pDynamicStates = dynamic_states.data()};
+
+    // WARN: as of now when the vertex points are hardcoded, this will be used
+    // to specify there is no vertex data
+    vk::PipelineVertexInputStateCreateInfo vertex_input_info;
+
+    // INPUT ASSEMBLY
+    // WARN: ASSUMPTION: the viewport will ALWAYS be the full screen span
+    vk::PipelineInputAssemblyStateCreateInfo input_assembly{
+        // Triangle lists only so far
+        .topology = vk::PrimitiveTopology::eTriangleList};
+
+    // What region of the screen will be rednered too
+    vk::Viewport viewport{0.0f,
+                          0.0f,
+                          static_cast<float>(swap_chain_extent.width),
+                          static_cast<float>(swap_chain_extent.height),
+                          0.0f,  // Min depth
+                          1.0f}; // Max depth
+    // Within the framebuffer, how much of it should appear in the final image
+    // Eg: if you do a half height scissor on a half height viewport, only the
+    // top quarter of the screen will appear
+    vk::Rect2D scissor{vk::Offset2D{0, 0}, swap_chain_extent};
+
+    // TODO: implement dynamic scissor and viewport
+    // https://docs.vulkan.org/tutorial/latest/03_Drawing_a_triangle/02_Graphics_pipeline_basics/02_Fixed_functions.html
+
+    vk::PipelineViewportStateCreateInfo viewport_state{.viewportCount = 1,
+                                                       .pViewports = &viewport,
+                                                       .scissorCount = 1,
+                                                       .pScissors = &scissor};
+
+    // Rasterizer - vertices to fragments
+    vk::PipelineRasterizationStateCreateInfo rasterizer_info{
+        .depthClampEnable = vk::False,
+        .rasterizerDiscardEnable = vk::False,
+        // NOTE: This is useful (wireframes accessible here)
+        .polygonMode = vk::PolygonMode::eFill,
+        // NOTE: Potentially interesting
+        .cullMode = vk::CullModeFlagBits::eBack,
+        .frontFace = vk::FrontFace::eClockwise,
+        .depthBiasEnable = vk::False,
+        // NOTE: Also useful
+        // WARN: anything thicker than 1 requires wideLines gpu feature
+        .lineWidth = 1.0f};
+
+    // Multi-sampling -> combining fragment shaders results of multiply polygons
+    // which rasterize to teh saem pixel (anti-aliesing)
+    // INFO: for now, false
+    vk::PipelineMultisampleStateCreateInfo multi_sampling{
+        .rasterizationSamples = vk::SampleCountFlagBits::e1,
+        .sampleShadingEnable = vk::False,
+    };
+
+    // TODO: to revisit
+    vk::PipelineDepthStencilStateCreateInfo *depth_stencil_buffer_info =
+        nullptr;
+
+    // Colour blending - after a frag shader retunrs the colour, how should ti
+    // be combined with the framebuffer colour
+    //
+    // INFO TODO: it would seem that this is very variable and perhaps best to
+    // be handed in
+    vk::PipelineColorBlendAttachmentState colour_blend_attachment{
+        .blendEnable = vk::False,
+        .colorWriteMask =
+            vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+            vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA};
+
+    vk::PipelineColorBlendStateCreateInfo colour_blending{
+        // Subject to variability depending on method blending. perhaps THIS
+        // should be passed in
+        .logicOpEnable = vk::False,
+        .logicOp = vk::LogicOp::eCopy,
+        .attachmentCount = 1,
+        .pAttachments = &colour_blend_attachment};
+
+    // Update the pipeline layout
+    vk::PipelineLayoutCreateInfo pipeline_layout_info{
+        .setLayoutCount = 0, .pushConstantRangeCount = 0};
+
+    pipeline_layout = vk::raii::PipelineLayout(device, pipeline_layout_info);
+
+    // DYNAMIC RENDERING
+    // eed to specify the formats of the attachments that will be using during
+    // rendering
+    vk::PipelineRenderingCreateInfo pipeline_rendering_info{
+        .colorAttachmentCount = 1,
+        .pColorAttachmentFormats = &swap_chain_surface_format.format};
+
+    // TODO: Christ
+    // https://docs.vulkan.org/tutorial/latest/03_Drawing_a_triangle/02_Graphics_pipeline_basics/04_Conclusion.html
+    vk::StructureChain<vk::GraphicsPipelineCreateInfo,
+                       vk::PipelineRenderingCreateInfo>
+        pipeline_info_chain = {
+            vk::GraphicsPipelineCreateInfo{
+                .stageCount = 2,
+                .pStages = shader_stages.data(),
+                .pVertexInputState = &vertex_input_info,
+                .pInputAssemblyState = &input_assembly,
+                .pViewportState = &viewport_state,
+                .pRasterizationState = &rasterizer_info,
+                .pMultisampleState = &multi_sampling,
+                .pColorBlendState = &colour_blending,
+                .layout = pipeline_layout,
+                .renderPass = nullptr},
+            vk::PipelineRenderingCreateInfo{
+                .colorAttachmentCount = 1,
+                .pColorAttachmentFormats = &swap_chain_surface_format.format}};
+
+    grapics_pipeline = vk::raii::Pipeline(
+        device, nullptr, // this nullptr is pipelinecache
+        pipeline_info_chain.get<vk::GraphicsPipelineCreateInfo>());
+  }
+
+  [[nodiscard]] vk::raii::ShaderModule
+  createShaderModule(const std::vector<char> &code) const {
+    if (device == nullptr)
+      throw std::runtime_error(
+          "Tried to create a shader module before device was initialised");
+
+    vk::ShaderModuleCreateInfo create_info{
+        .codeSize = code.size() * sizeof(char),
+        // THe size fo the bytecode is specified in bytes, but the bytecode
+        // pointer is a uint32_t so you reinterpret cast
+        .pCode = reinterpret_cast<const uint32_t *>(code.data())};
+
+    return vk::raii::ShaderModule(device, create_info);
   }
 
   void createSurface() {
@@ -74,6 +305,31 @@ private:
     }
   }
 
+  /*
+   * Need a view onto each of the swap chain images
+   */
+  void createImageViews() {
+    assert(swap_chain_image_views.empty());
+    // TODO: a lot of the data is ambiguous
+    vk::ImageViewCreateInfo image_view_create_info{
+        .viewType = vk::ImageViewType::e2D,
+        .format = swap_chain_surface_format
+                      .format, // How the colour space components are configured
+        // This describes what the images purpose is and which part of the image
+        // should be accessed
+        .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}};
+
+    for (auto &image : swap_chain_images) {
+      image_view_create_info.image = image;
+      swap_chain_image_views.emplace_back(device, image_view_create_info);
+    }
+  }
+
+  /*
+   * Swap chain is a list of the surfaces that the OS returns to vulkan to be
+   * drawn upon - i think
+   * TODO: learn more
+   */
   void createSwapChain() {
     if (instance == nullptr || physical_device == nullptr ||
         device == nullptr || graphics_queue == nullptr || surface == nullptr)
@@ -182,6 +438,12 @@ private:
 
     swap_chain = vk::raii::SwapchainKHR(device, swapChainCreateInfo);
     swap_chain_images = swap_chain.getImages();
+    swap_chain_surface_format = chosen_swap_surface_format;
+    swap_chain_extent = chosen_swap_extent;
+
+    auto swap_chain_info = swap_chain.getDevice();
+
+    std::cout << "Swap chain device is " << swap_chain_info << std::endl;
   }
 
   void createLogicalDeviceAndQueue() {
@@ -433,6 +695,12 @@ private:
   vk::raii::Queue graphics_queue = nullptr;
   vk::raii::SwapchainKHR swap_chain = nullptr;
   std::vector<vk::Image> swap_chain_images;
+  vk::SurfaceFormatKHR swap_chain_surface_format;
+  vk::Extent2D swap_chain_extent;
+  std::vector<vk::raii::ImageView> swap_chain_image_views;
+  // Useful for specifying push contstants too
+  vk::raii::PipelineLayout pipeline_layout = nullptr;
+  vk::raii::Pipeline grapics_pipeline = nullptr;
 };
 
 int main() {
