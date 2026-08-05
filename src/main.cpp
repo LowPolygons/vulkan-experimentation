@@ -65,17 +65,241 @@ private:
     createSwapChain();
     createImageViews();
     createGraphicsPipeline();
+    createCommandPool();
+    createCommandBuffer();
+    createSyncObjects();
   }
 
   void mainLoop() {
     if (auto window = window_container->get().lock()) {
       while (!glfwWindowShouldClose(window.get())) {
         glfwPollEvents();
+        drawFrame();
       }
+      device.waitIdle();
     } else {
       throw std::runtime_error(
           "Tried to utilise window after GlfwWindow deletion");
     }
+  }
+
+  void createSyncObjects() {
+    present_complete_semaphore =
+        vk::raii::Semaphore(device, vk::SemaphoreCreateInfo());
+    render_finished_semaphore =
+        vk::raii::Semaphore(device, vk::SemaphoreCreateInfo());
+    draw_fence =
+        vk::raii::Fence(device, {.flags = vk::FenceCreateFlagBits::eSignaled});
+  }
+
+  // TODO: understand Semaphores & fences better
+  void drawFrame() {
+    // At a higher level:
+    // -> Wait for previous frame to finish
+    // -> Aquire image from swap chain
+    // -> record command buffer which draws that scene into the image
+    // -> submit the recorded command buffer
+    // -> Present swap chain image
+
+    // WARN: things here are async, so care is required
+    // A binary 'Semaphore' is used to add order between async queue ops
+    //
+    // Semaphores act as a conductor:
+    // Semaphore 'S' submits A and B, B depends on A
+    // A signals to S it is finished, B waits until S signals to start to start
+    //
+    // Fences are similar, but used on the CPU
+
+    // We have two synchro primitives and two scnearions to have
+    // synchronisation: swapchain ops on the gpu, waitig for the previous frame
+    // to finish
+
+    // Takes array fo fences and waits on host for either any or all of the
+    // fences to be signaled. vk::true means wait for all. the UINT64_MAX is a
+    // timeout (we have essentially disabled it)
+    auto fence_result = device.waitForFences(*draw_fence, vk::True, UINT64_MAX);
+    if (fence_result != vk::Result::eSuccess)
+      throw std::runtime_error("Failed to wait for the draw fence");
+
+    device.resetFences(*draw_fence);
+
+    // First param is a timeout in nanoseconds, second & third is for synchro
+    // objects
+    // returns a vk::result, and the index of the swap chain image that is
+    // available, referring to the vk::Image array
+    auto [result, image_index] = swap_chain.acquireNextImage(
+        UINT64_MAX, *present_complete_semaphore, nullptr);
+
+    // Record the commands to be submitted
+    recordCommandBuffer(image_index);
+
+    vk::PipelineStageFlags wait_destination_stage_mask(
+        vk::PipelineStageFlagBits::eColorAttachmentOutput);
+    const vk::SubmitInfo submit_info{
+        // Firs three specify which semaphore to wait on BEFORE execution
+        // begins, and where to wait in pipeline
+        // We wait until the image is availabel to write colours
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &*present_complete_semaphore,
+        .pWaitDstStageMask = &wait_destination_stage_mask,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &*command_buffer,
+        .signalSemaphoreCount = 1,
+        // Which semaphore to signal once it has finished execution
+        .pSignalSemaphores = &*render_finished_semaphore};
+
+    graphics_queue.submit(submit_info, *draw_fence);
+
+    // WARN: MIssed section on subpass dependency which is "far more explicit
+    // than is necessary" and thats saying something
+
+    const vk::PresentInfoKHR present_info_khr{
+        .waitSemaphoreCount = 1,
+        // WHich to wait on
+        .pWaitSemaphores = &*render_finished_semaphore,
+        .swapchainCount = 1,
+        // Swapchain to present the image to
+        .pSwapchains = &*swap_chain,
+        .pImageIndices = &image_index};
+
+    result = graphics_queue.presentKHR(present_info_khr);
+  }
+
+  void recordCommandBuffer(uint32_t image_index) {
+    // This function writes the desired commands to the command buffer
+
+    // It takes in a vk::CommandBufferBeginInfo structu
+    command_buffer.reset();
+    command_buffer.begin({});
+
+    transition_image_layout(image_index, vk::ImageLayout::eUndefined,
+                            vk::ImageLayout::eColorAttachmentOptimal,
+                            {}, // src access mask unused (dont need to wait for
+                                // previous ops apparently lol)
+                            vk::AccessFlagBits2::eColorAttachmentWrite,
+                            vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                            vk::PipelineStageFlagBits2::eColorAttachmentOutput);
+
+    vk::ClearValue clear_colour = vk::ClearColorValue(0.0f, 0.0f, 0.0f, 1.0f);
+    vk::RenderingAttachmentInfo attachment_info{
+        // which image to render
+        .imageView = swap_chain_image_views[image_index],
+        // layout the image will be in during rendering
+        .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        // What to do with the image before rendering (clear to black)
+        .loadOp = vk::AttachmentLoadOp::eClear,
+        // What to do after (stores the image for us)
+        .storeOp = vk::AttachmentStoreOp::eStore,
+        .clearValue = clear_colour};
+
+    vk::RenderingInfo rendering_info{
+        // sz/o render area, similar to render pass
+        .renderArea = {.offset = {0, 0}, .extent = swap_chain_extent},
+        .layerCount = 1,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &attachment_info};
+
+    command_buffer.beginRendering(rendering_info);
+
+    // first specify if it is a graphics or compute pipeline, and then the
+    // instructions
+    command_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics,
+                                *grapics_pipeline);
+
+    command_buffer.setViewport(
+        0,
+        vk::Viewport(0.0f, 0.0f, static_cast<float>(swap_chain_extent.width),
+                     static_cast<float>(swap_chain_extent.height), 0.0f, 1.0f));
+    command_buffer.setScissor(
+        0, vk::Rect2D(vk::Offset2D(0, 0), swap_chain_extent));
+
+    command_buffer.draw(
+        3, // vertex count - usually aquired by the vertex buffer but we dont
+           // have one
+        1, // instanceCount - instance rendering - 1 means dont do that
+        0, // firstVirtext - offset into the vertex buffer -> defines the lowest
+           // value of SV_VertexId
+        0  // firstInstance - used as an ffset for isntanced rendering, defiens
+           // the lowest value of SV_InstanceID
+    );
+
+    command_buffer.endRendering();
+
+    // Transition image to screen
+    // WARN: NO IDEA
+    transition_image_layout(image_index,
+                            vk::ImageLayout::eColorAttachmentOptimal,
+                            vk::ImageLayout::ePresentSrcKHR,
+                            vk::AccessFlagBits2::eColorAttachmentWrite, {},
+                            vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                            vk::PipelineStageFlagBits2::eBottomOfPipe);
+
+    command_buffer.end();
+  }
+
+  void createCommandBuffer() {
+    if (device == nullptr)
+      throw std::runtime_error(
+          "Tried to create a graphics pipeline before device was initialised");
+    // TODO: no clue
+    vk::CommandBufferAllocateInfo alloc_info{
+        .commandPool = command_pool,
+        // Can be subimitted to queue for executed, but not called from other
+        // command buffers
+        .level = vk::CommandBufferLevel::ePrimary,
+        .commandBufferCount = 1};
+
+    command_buffer =
+        //::CommandBuffers creates a std::vector<> but we want just one so get
+        //: the first
+        std::move(vk::raii::CommandBuffers(device, alloc_info).front());
+  }
+
+  // WARN: copied directly from
+  // The idea is that images are generic to be specialisable fro different
+  // things, such as for presentation to the screen or for color attachements
+  // etc
+  //
+  // This function transitions the iamge layout from ::UNdefined to
+  // ::eColorAttachementOptimal
+  // https://docs.vulkan.org/tutorial/latest/03_Drawing_a_triangle/03_Drawing/01_Command_buffers.html
+  void transition_image_layout(uint32_t imageIndex, vk::ImageLayout old_layout,
+                               vk::ImageLayout new_layout,
+                               vk::AccessFlags2 src_access_mask,
+                               vk::AccessFlags2 dst_access_mask,
+                               vk::PipelineStageFlags2 src_stage_mask,
+                               vk::PipelineStageFlags2 dst_stage_mask) {
+    vk::ImageMemoryBarrier2 barrier = {
+        .srcStageMask = src_stage_mask,
+        .srcAccessMask = src_access_mask,
+        .dstStageMask = dst_stage_mask,
+        .dstAccessMask = dst_access_mask,
+        .oldLayout = old_layout,
+        .newLayout = new_layout,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = swap_chain_images[imageIndex],
+        .subresourceRange = {.aspectMask = vk::ImageAspectFlagBits::eColor,
+                             .baseMipLevel = 0,
+                             .levelCount = 1,
+                             .baseArrayLayer = 0,
+                             .layerCount = 1}};
+    vk::DependencyInfo dependency_info = {.dependencyFlags = {},
+                                          .imageMemoryBarrierCount = 1,
+                                          .pImageMemoryBarriers = &barrier};
+    command_buffer.pipelineBarrier2(dependency_info);
+  }
+
+  void createCommandPool() {
+    if (device == nullptr)
+      throw std::runtime_error(
+          "Tried to create a graphics pipeline before device was initialised");
+
+    vk::CommandPoolCreateInfo pool_info{
+        .flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
+        .queueFamilyIndex = queue_index};
+
+    command_pool = vk::raii::CommandPool(device, pool_info);
   }
 
   /*
@@ -263,6 +487,7 @@ private:
                 .pRasterizationState = &rasterizer_info,
                 .pMultisampleState = &multi_sampling,
                 .pColorBlendState = &colour_blending,
+                .pDynamicState = &dynamic_state,
                 .layout = pipeline_layout,
                 .renderPass = nullptr},
             vk::PipelineRenderingCreateInfo{
@@ -459,7 +684,7 @@ private:
         physical_device.getQueueFamilyProperties();
 
     // Apparently thats a bitwise NOT
-    uint32_t queue_index = ~0;
+    queue_index = ~0;
 
     // TODO: understand what is happening here
     for (uint32_t q_fam_prop_index = 0;
@@ -487,7 +712,7 @@ private:
             {}, // physical device empty for now
             {.shaderDrawParameters =
                  true}, // Only choosing this feature from vulkan 11, etc
-            {.dynamicRendering = true},
+            {.synchronization2 = true, .dynamicRendering = true},
             {.extendedDynamicState = true}};
 
     // Queue Priority (requried even if there is one queue)
@@ -692,6 +917,7 @@ private:
   vk::raii::SurfaceKHR surface = nullptr;
   vk::raii::PhysicalDevice physical_device = nullptr;
   vk::raii::Device device = nullptr;
+  uint32_t queue_index;
   vk::raii::Queue graphics_queue = nullptr;
   vk::raii::SwapchainKHR swap_chain = nullptr;
   std::vector<vk::Image> swap_chain_images;
@@ -701,6 +927,12 @@ private:
   // Useful for specifying push contstants too
   vk::raii::PipelineLayout pipeline_layout = nullptr;
   vk::raii::Pipeline grapics_pipeline = nullptr;
+  vk::raii::CommandPool command_pool = nullptr;
+  vk::raii::CommandBuffer command_buffer = nullptr;
+
+  vk::raii::Semaphore present_complete_semaphore = nullptr;
+  vk::raii::Semaphore render_finished_semaphore = nullptr;
+  vk::raii::Fence draw_fence = nullptr;
 };
 
 int main() {
