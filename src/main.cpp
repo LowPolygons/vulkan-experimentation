@@ -3,6 +3,10 @@
 #include <fstream>
 #include <limits>
 
+// This library provides a neat interface for mapping data from C++ to the slang
+// shader
+#include <glm/glm.hpp>
+
 // When the window resizes or soemthing happens that prompts a swap chain going
 // out of date, it usually acts as an error
 #define VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS
@@ -19,6 +23,43 @@
 #include <iostream>
 #include <stdexcept>
 
+struct ShaderVertex {
+  glm::vec2 position;
+  glm::vec3 colour;
+
+  // Need to provide info on how to transfer this data to the gpu
+  static vk::VertexInputBindingDescription get_binding_descriptions() {
+    // Describes at which rate to load data from memory thrughout the vertices
+    return {// Index of the binding in the arrya of bindings /shrug
+            .binding = 0,
+            // The number of bytes from one entry to the next
+            .stride = sizeof(ShaderVertex),
+            // eVertex moves to next data entry after each vertex, as opposed to
+            // eInstance
+            .inputRate = vk::VertexInputRate::eVertex};
+  }
+
+  // Next we need to describe how to actually handle the data inside of the
+  // structure
+  static std::array<vk::VertexInputAttributeDescription, 2>
+  get_attribute_descriptions() {
+    return {{vk::VertexInputAttributeDescription{
+                 .location = 0,
+                 .binding = 0,
+                 .format = vk::Format::eR32G32Sfloat,
+                 .offset = offsetof(ShaderVertex, position)},
+             vk::VertexInputAttributeDescription{
+                 .location = 1,
+                 .binding = 0,
+                 .format = vk::Format::eR32G32B32Sfloat,
+                 .offset = offsetof(ShaderVertex, colour)}}};
+  }
+};
+
+const std::vector<ShaderVertex> vertices = {
+    {{-0.9, -0.9}, {1.0, 1.0, 0.0}}, {{-0.1, 0}, {1.0, 0.0, 1.0}},
+    {{-0.9, 0.0}, {0.0, 1.0, 1.0}},  {{0.9, 0.9}, {1.0, 1.0, 1.0}},
+    {{0.1, 0}, {1.0, 1.0, 1.0}},     {{0.9, 0}, {1.0, 1.0, 1.0}}};
 const std::vector<const char *> REQUIRED_DEVICE_EXTENSIONS = {
     vk::KHRSwapchainExtensionName};
 
@@ -91,8 +132,73 @@ private:
     createImageViews();
     createGraphicsPipeline();
     createCommandPool();
+    createVertexBuffer();
     createCommandBuffers();
     createSyncObjects();
+  }
+
+  void createVertexBuffer() {
+    vk::BufferCreateInfo buffer_info{
+        // .size = sizeof(ShaderVertex) * vertices.size(),
+        .size = sizeof(vertices[0]) * vertices.size(),
+        .usage = vk::BufferUsageFlagBits::eVertexBuffer,
+        // Buffers can be owned by multple queues, not relevant here
+        .sharingMode = vk::SharingMode::eExclusive};
+
+    // By this point, the buffer has info on itself, but not actual memory
+    // allocated
+    vertex_buffer = vk::raii::Buffer(device, buffer_info);
+
+    vk::MemoryRequirements memory_reqs = vertex_buffer.getMemoryRequirements();
+
+    // It isnt (of course) as simple as now allocating the memory, as different
+    // GPUs may offer differnet types of memory to allocate
+    auto find_memory_type =
+        [this](uint32_t type_filter,
+               vk::MemoryPropertyFlags property_flags) -> uint32_t {
+      // device mem properties
+      // Contains memoryTypes and memoryHeaps
+      // A mem heap is a 'distinct memotry resource like dedicated vram and swap
+      // space in ram for when vram runs out'
+      vk::PhysicalDeviceMemoryProperties memory_props =
+          physical_device.getMemoryProperties();
+      // typefilter is a bit field of suitable memory types
+      // this iterates over the bits and checks if the bit == 1
+      //
+      // we also need the data to be host visible and coherent for this usecase
+      // these will be defiend in the property_flags
+      for (auto i = 0; i < memory_props.memoryTypeCount; i++) {
+        if ((type_filter & (1 << i)) &&
+            (memory_props.memoryTypes[i].propertyFlags & property_flags) ==
+                property_flags)
+          return i;
+      }
+      throw std::runtime_error("Failed to find suitable memory type");
+    };
+
+    vk::MemoryAllocateInfo memory_allocation_info{
+        .allocationSize = memory_reqs.size,
+        .memoryTypeIndex =
+            find_memory_type(memory_reqs.memoryTypeBits,
+                             vk::MemoryPropertyFlagBits::eHostVisible |
+                                 vk::MemoryPropertyFlagBits::eHostCoherent)};
+
+    vertex_buffer_memory =
+        vk::raii::DeviceMemory(device, memory_allocation_info);
+    // Offset is zero
+    vertex_buffer.bindMemory(*vertex_buffer_memory, 0);
+
+    // Map the cpu memory to the gpu
+    void *memory_location = vertex_buffer_memory.mapMemory(0, buffer_info.size);
+    mempcpy(memory_location, vertices.data(), buffer_info.size);
+
+    // Caching and other things may mean the data isnt immediately mapped to
+    // memory, but eHostCoherent prevents that. There is a more performant way
+    // to do this by mnanually flishng mapped memory ranges and invalivated them
+    // before reading the mapped memory
+
+    // TODO: understand why i have to map/unmap the memory
+    vertex_buffer_memory.unmapMemory();
   }
 
   void wipeSwapChain() {
@@ -322,9 +428,17 @@ private:
     command_buffers[current_frame_index].setScissor(
         0, vk::Rect2D(vk::Offset2D(0, 0), swap_chain_extent));
 
+    // 0 -> offset into binding. the memory layout is exactly matching what we
+    // want so its just 0
+    // -> the array of buffers to bind
+    // {0} -> an array of the same size of byte offsets to start reading vertex
+    // data from
+    command_buffers[current_frame_index].bindVertexBuffers(0, *vertex_buffer,
+                                                           {0});
+
     command_buffers[current_frame_index].draw(
-        3, // vertex count - usually aquired by the vertex buffer but we dont
-           // have one
+        vertices.size(), // vertex count - usually aquired by the vertex buffer
+                         // but we dont have one
         1, // instanceCount - instance rendering - 1 means dont do that
         0, // firstVirtext - offset into the vertex buffer -> defines the lowest
            // value of SV_VertexId
@@ -491,9 +605,15 @@ private:
         .dynamicStateCount = static_cast<uint32_t>(dynamic_states.size()),
         .pDynamicStates = dynamic_states.data()};
 
-    // WARN: as of now when the vertex points are hardcoded, this will be used
-    // to specify there is no vertex data
-    vk::PipelineVertexInputStateCreateInfo vertex_input_info;
+    // Get descriptors of the data that will be passed in
+    auto binding_description = ShaderVertex::get_binding_descriptions();
+    auto attribute_description = ShaderVertex::get_attribute_descriptions();
+    vk::PipelineVertexInputStateCreateInfo vertex_input_info{
+        .vertexBindingDescriptionCount = 1,
+        .pVertexBindingDescriptions = &binding_description,
+        .vertexAttributeDescriptionCount =
+            static_cast<uint32_t>(attribute_description.size()),
+        .pVertexAttributeDescriptions = attribute_description.data()};
 
     // INPUT ASSEMBLY
     // WARN: ASSUMPTION: the viewport will ALWAYS be the full screen span
@@ -1044,6 +1164,9 @@ private:
   vk::raii::PipelineLayout pipeline_layout = nullptr;
   vk::raii::Pipeline grapics_pipeline = nullptr;
   vk::raii::CommandPool command_pool = nullptr;
+
+  vk::raii::Buffer vertex_buffer = nullptr;
+  vk::raii::DeviceMemory vertex_buffer_memory = nullptr;
 
   std::vector<vk::raii::CommandBuffer> command_buffers;
   std::vector<vk::raii::Semaphore> present_complete_semaphores;

@@ -10,17 +10,23 @@ static float3 colors[3] = float3[](
     float3(1.0, 0.0, 1.0)
 );
 
+
+struct VertexInput {
+    float2 position;
+    float3 colour;
+};
+
 struct VertexOutput {
     float3 color;
     float4 sv_position : SV_Position;
 };
 
 [shader("vertex")]
-VertexOutput vertMain(uint vid : SV_VertexID) {
+VertexOutput vertMain(VertexInput input) {
     VertexOutput output;
     // Remember that this is per vertex, and due to interpolation this will create a smooth gradient in the frag shader? i think; the interpolation happens somewhere
-    output.sv_position = float4(positions[vid], 0.0, 1.0);
-    output.color = colors[vid];
+    output.sv_position = float4(input.position, 0.0, 1.0);
+    output.color = input.colour;
     return output;
 }
 
