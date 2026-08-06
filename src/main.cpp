@@ -26,6 +26,10 @@ constexpr bool ENABLE_VALIDATION_LAYERS = false;
 constexpr bool ENABLE_VALIDATION_LAYERS = true;
 #endif
 
+// Before frames in flight, it would wait until the previous frame is finished
+// before the next begins rendering
+constexpr int MAX_FRAMES_IN_FLIGHT = 2;
+
 std::vector<char> read_shader(const std::string &file_name) {
   // End of file lets you immediately see the size of the file
   std::ifstream file(file_name, std::ios::ate | std::ios::binary);
@@ -81,7 +85,7 @@ private:
     createImageViews();
     createGraphicsPipeline();
     createCommandPool();
-    createCommandBuffer();
+    createCommandBuffers();
     createSyncObjects();
   }
 
@@ -126,10 +130,19 @@ private:
   }
 
   void createSyncObjects() {
-    present_complete_semaphore =
-        vk::raii::Semaphore(device, vk::SemaphoreCreateInfo());
-    draw_fence =
-        vk::raii::Fence(device, {.flags = vk::FenceCreateFlagBits::eSignaled});
+    assert(present_complete_semaphores.empty() &&
+           render_finished_semaphores.empty() && draw_fences.empty());
+    for (auto i = 0; i < swap_chain_images.size(); i++)
+      render_finished_semaphores.emplace_back(device,
+                                              vk::SemaphoreCreateInfo());
+
+    for (auto i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+      present_complete_semaphores.emplace_back(device,
+                                               vk::SemaphoreCreateInfo());
+      draw_fences.emplace_back(
+          device,
+          vk::FenceCreateInfo{.flags = vk::FenceCreateFlagBits::eSignaled});
+    }
   }
 
   // TODO: understand Semaphores & fences better
@@ -157,18 +170,19 @@ private:
     // Takes array fo fences and waits on host for either any or all of the
     // fences to be signaled. vk::true means wait for all. the UINT64_MAX is a
     // timeout (we have essentially disabled it)
-    auto fence_result = device.waitForFences(*draw_fence, vk::True, UINT64_MAX);
+    auto fence_result = device.waitForFences(*draw_fences[current_frame_index],
+                                             vk::True, UINT64_MAX);
     if (fence_result != vk::Result::eSuccess)
       throw std::runtime_error("Failed to wait for the draw fence");
 
-    device.resetFences(*draw_fence);
+    device.resetFences(*draw_fences[current_frame_index]);
 
     // First param is a timeout in nanoseconds, second & third is for synchro
     // objects
     // returns a vk::result, and the index of the swap chain image that is
     // available, referring to the vk::Image array
     auto [result, image_index] = swap_chain.acquireNextImage(
-        UINT64_MAX, *present_complete_semaphore, nullptr);
+        UINT64_MAX, *present_complete_semaphores[current_frame_index], nullptr);
 
     // Record the commands to be submitted
     recordCommandBuffer(image_index);
@@ -180,15 +194,18 @@ private:
         // begins, and where to wait in pipeline
         // We wait until the image is availabel to write colours
         .waitSemaphoreCount = 1,
-        .pWaitSemaphores = &*present_complete_semaphore,
+        .pWaitSemaphores = &*present_complete_semaphores[current_frame_index],
         .pWaitDstStageMask = &wait_destination_stage_mask,
         .commandBufferCount = 1,
-        .pCommandBuffers = &*command_buffer,
+        .pCommandBuffers = &*command_buffers[current_frame_index],
         .signalSemaphoreCount = 1,
         // Which semaphore to signal once it has finished execution
         .pSignalSemaphores = &*render_finished_semaphores[image_index]};
 
-    graphics_queue.submit(submit_info, *draw_fence);
+    graphics_queue.submit(submit_info, *draw_fences[current_frame_index]);
+
+    // Early starbound swingStage flash backs :)
+    current_frame_index = (current_frame_index + 1) % MAX_FRAMES_IN_FLIGHT;
 
     // WARN: MIssed section on subpass dependency which is "far more explicit
     // than is necessary" and thats saying something
@@ -209,8 +226,8 @@ private:
     // This function writes the desired commands to the command buffer
 
     // It takes in a vk::CommandBufferBeginInfo structu
-    command_buffer.reset();
-    command_buffer.begin({});
+    command_buffers[current_frame_index].reset();
+    command_buffers[current_frame_index].begin({});
 
     transition_image_layout(image_index, vk::ImageLayout::eUndefined,
                             vk::ImageLayout::eColorAttachmentOptimal,
@@ -239,21 +256,21 @@ private:
         .colorAttachmentCount = 1,
         .pColorAttachments = &attachment_info};
 
-    command_buffer.beginRendering(rendering_info);
+    command_buffers[current_frame_index].beginRendering(rendering_info);
 
     // first specify if it is a graphics or compute pipeline, and then the
     // instructions
-    command_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics,
-                                *grapics_pipeline);
+    command_buffers[current_frame_index].bindPipeline(
+        vk::PipelineBindPoint::eGraphics, *grapics_pipeline);
 
-    command_buffer.setViewport(
+    command_buffers[current_frame_index].setViewport(
         0,
         vk::Viewport(0.0f, 0.0f, static_cast<float>(swap_chain_extent.width),
                      static_cast<float>(swap_chain_extent.height), 0.0f, 1.0f));
-    command_buffer.setScissor(
+    command_buffers[current_frame_index].setScissor(
         0, vk::Rect2D(vk::Offset2D(0, 0), swap_chain_extent));
 
-    command_buffer.draw(
+    command_buffers[current_frame_index].draw(
         3, // vertex count - usually aquired by the vertex buffer but we dont
            // have one
         1, // instanceCount - instance rendering - 1 means dont do that
@@ -263,7 +280,7 @@ private:
            // the lowest value of SV_InstanceID
     );
 
-    command_buffer.endRendering();
+    command_buffers[current_frame_index].endRendering();
 
     // Transition image to screen
     // WARN: NO IDEA
@@ -274,25 +291,22 @@ private:
                             vk::PipelineStageFlagBits2::eColorAttachmentOutput,
                             vk::PipelineStageFlagBits2::eBottomOfPipe);
 
-    command_buffer.end();
+    command_buffers[current_frame_index].end();
   }
 
-  void createCommandBuffer() {
+  void createCommandBuffers() {
     if (device == nullptr)
       throw std::runtime_error(
           "Tried to create a graphics pipeline before device was initialised");
     // TODO: no clue
     vk::CommandBufferAllocateInfo alloc_info{
         .commandPool = command_pool,
-        // Can be subimitted to queue for executed, but not called from other
+        // Can be subimitted to queue for execution, but not called from other
         // command buffers
         .level = vk::CommandBufferLevel::ePrimary,
-        .commandBufferCount = 1};
+        .commandBufferCount = MAX_FRAMES_IN_FLIGHT};
 
-    command_buffer =
-        //::CommandBuffers creates a std::vector<> but we want just one so get
-        //: the first
-        std::move(vk::raii::CommandBuffers(device, alloc_info).front());
+    command_buffers = vk::raii::CommandBuffers(device, alloc_info);
   }
 
   // WARN: copied directly from
@@ -327,7 +341,7 @@ private:
     vk::DependencyInfo dependency_info = {.dependencyFlags = {},
                                           .imageMemoryBarrierCount = 1,
                                           .pImageMemoryBarriers = &barrier};
-    command_buffer.pipelineBarrier2(dependency_info);
+    command_buffers[current_frame_index].pipelineBarrier2(dependency_info);
   }
 
   void createCommandPool() {
@@ -709,13 +723,6 @@ private:
     auto swap_chain_info = swap_chain.getDevice();
 
     std::cout << "Swap chain device is " << swap_chain_info << std::endl;
-
-    render_finished_semaphores.clear();
-
-    for (size_t i = 0; i < swap_chain_images.size(); ++i) {
-      render_finished_semaphores.emplace_back(device,
-                                              vk::SemaphoreCreateInfo{});
-    }
   }
 
   void createLogicalDeviceAndQueue() {
@@ -985,11 +992,12 @@ private:
   vk::raii::PipelineLayout pipeline_layout = nullptr;
   vk::raii::Pipeline grapics_pipeline = nullptr;
   vk::raii::CommandPool command_pool = nullptr;
-  vk::raii::CommandBuffer command_buffer = nullptr;
 
-  vk::raii::Semaphore present_complete_semaphore = nullptr;
+  std::vector<vk::raii::CommandBuffer> command_buffers;
+  std::vector<vk::raii::Semaphore> present_complete_semaphores;
   std::vector<vk::raii::Semaphore> render_finished_semaphores;
-  vk::raii::Fence draw_fence = nullptr;
+  std::vector<vk::raii::Fence> draw_fences;
+  uint32_t current_frame_index = 0;
 };
 
 int main() {
