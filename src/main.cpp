@@ -1097,7 +1097,7 @@ private:
       if (device_properties.deviceType ==
               vk::PhysicalDeviceType::eDiscreteGpu &&
           device_features.geometryShader) {
-        this->physical_device = _physical_device;
+        physical_device = _physical_device;
         break;
       }
     }

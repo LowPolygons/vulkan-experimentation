@@ -11,6 +11,9 @@ This serves less as a README for using the script, and more for documenting my u
 - 3) Create a Surface from the window
   --> Get a window surface from GLFW and make it vulkan applicable with the instance
 - 4) Create a Physical Device
+  --> Of the physical devices available, pick one and ensure it supports all requirements 
+- 5) Create a Logical Device, and a Queue
+  --> // TODO
 
 ## Initialise a Window Context
 
@@ -64,3 +67,25 @@ Thanks to GLFW interfacing so well with Vulkan, this is extremely simple. The so
 Using the previously acquired instance, we create a vulkan surface.
 
 Note: this is a Khronos API `vk::raii::SurfaceKHR surface`
+
+
+## Create a Physical Device
+
+The computer running the code may have multiple physical devices that supports Vulkan
+
+It will try and choose a 'discrete' GPU (as opposed to integrated graphics)
+
+It will then ensure that this GPU supports all the right extensions, api version and queue families
+
+### Note on Queues in relation to the physical device
+
+A queue is where all operations are submitted. Queues exist in families, each with different subsets of features
+
+This API is restricted to graphics-supported queues. 
+
+WARN: This may need to change with compute shaders, I'm honestly not sure
+
+With this, the `vk::raii::PhysicalDevice physical_device` is created
+
+The question to be answered: Why does it need a Physical AND Logical Device?
+
