@@ -8,9 +8,11 @@
 #include <glm/glm.hpp>
 #include <tuple>
 
-// When the window resizes or soemthing happens that prompts a swap chain going
-// out of date, it usually acts as an error
-#define VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS
+#ifndef VULKAN_APP_SHADER_PATH
+constexpr bool SHADERS_NOT_FOUND = true;
+#else
+constexpr bool SHADERS_NOT_FOUND = false;
+#endif
 
 #include <vulkan/vulkan.hpp>
 #include <vulkan/vulkan_raii.hpp>
@@ -673,7 +675,7 @@ private:
       throw std::runtime_error(
           "Tried to create a graphics pipeline before device was initialised");
 
-    auto shader_bytecode = read_shader("slang.spv");
+    auto shader_bytecode = read_shader("shaders/slang.spv");
     vk::raii::ShaderModule shader_module = createShaderModule(shader_bytecode);
 
     // The use the shader, the pipeline stages need to be assigned via a
@@ -1276,6 +1278,9 @@ private:
 int main() {
   constexpr uint32_t WIDTH = 800;
   constexpr uint32_t HEIGHT = 600;
+
+  if (SHADERS_NOT_FOUND)
+    throw std::runtime_error("Could not find shaders directory");
 
   try {
     GlfwWindowContainer container({WIDTH, HEIGHT}, "Test GLFW Window");
