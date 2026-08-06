@@ -22,6 +22,7 @@ const std::vector<char const *> validationLayers = {
 #ifdef NDEBUG
 constexpr bool ENABLE_VALIDATION_LAYERS = false;
 #else
+// constexpr bool ENABLE_VALIDATION_LAYERS = true;
 constexpr bool ENABLE_VALIDATION_LAYERS = true;
 #endif
 
@@ -42,6 +43,19 @@ std::vector<char> read_shader(const std::string &file_name) {
   return buffer;
 }
 
+// TODO: better understand this function signature to allow a more modular
+// wrapper
+static VKAPI_ATTR vk::Bool32 VKAPI_CALL
+callback_function(vk::DebugUtilsMessageSeverityFlagBitsEXT severity,
+                  vk::DebugUtilsMessageTypeFlagsEXT type,
+                  const vk::DebugUtilsMessengerCallbackDataEXT *p_callback_data,
+                  void *_p_user_data) {
+  std::cerr << "validation layer: type " << to_string(type)
+            << " msg: " << p_callback_data->pMessage << std::endl;
+
+  return vk::False;
+}
+
 // NOTE: Any KHR just menas khronos
 
 // TODO: Understand WHY each step has to be done and write it down
@@ -59,6 +73,7 @@ public:
 private:
   void initVulkan() {
     createInstance();
+    createDebugMessenger();
     createSurface();
     pickPhysicalDevice();
     createLogicalDeviceAndQueue();
@@ -81,6 +96,33 @@ private:
       throw std::runtime_error(
           "Tried to utilise window after GlfwWindow deletion");
     }
+  }
+
+  void createDebugMessenger() {
+#define MessageSeverity vk::DebugUtilsMessageSeverityFlagBitsEXT
+#define MessageType vk::DebugUtilsMessageTypeFlagBitsEXT
+
+    if (!ENABLE_VALIDATION_LAYERS)
+      return;
+
+    std::cout << "Reaching here" << std::endl;
+
+    vk::DebugUtilsMessageSeverityFlagsEXT severity_flags(
+        MessageSeverity::eWarning | MessageSeverity::eError);
+    vk::DebugUtilsMessageTypeFlagsEXT message_type_flags(
+        MessageType::eGeneral | MessageType::ePerformance |
+        MessageType::eValidation);
+
+    vk::DebugUtilsMessengerCreateInfoEXT debug_utils_messenger_info{
+        .messageSeverity = severity_flags,
+        .messageType = message_type_flags,
+        // pointer to call back function
+        .pfnUserCallback = &callback_function,
+    };
+    std::cout << "Reaching here" << std::endl;
+    debug_messenger =
+        instance.createDebugUtilsMessengerEXT(debug_utils_messenger_info);
+    std::cout << "Reaching here" << std::endl;
   }
 
   void createSyncObjects() {
@@ -861,9 +903,9 @@ private:
 
     // Get required layers
     std::vector<char const *> requiredLayers;
-    if (ENABLE_VALIDATION_LAYERS)
+    if (ENABLE_VALIDATION_LAYERS) {
       requiredLayers.assign(validationLayers.begin(), validationLayers.end());
-
+    }
     // Check if the required layers are supported by the existing vulkan
     // implementation
     auto layerProperties = context.enumerateInstanceLayerProperties();
@@ -885,19 +927,28 @@ private:
     auto glfwExtensions =
         glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
 
+    std::vector all_extensions(glfwExtensions,
+                               glfwExtensions + glfwExtensionCount);
+
+    if (ENABLE_VALIDATION_LAYERS)
+      all_extensions.push_back(vk::EXTDebugUtilsExtensionName);
+
+    for (auto e : all_extensions)
+      std::cout << "Enabled extensions: " << e << std::endl;
+
     // Check if the required FLGW exensions are supported by the vulkan
     // implementation
     auto extensionProperties = context.enumerateInstanceExtensionProperties();
 
-    for (uint32_t i = 0; i < glfwExtensionCount; ++i) {
+    for (uint32_t i = 0; i < all_extensions.size(); ++i) {
       if (std::ranges::none_of(extensionProperties,
-                               [glfwExtension = glfwExtensions[i]](
+                               [curr_extension = all_extensions[i]](
                                    auto const &extensionProperty) {
                                  return strcmp(extensionProperty.extensionName,
-                                               glfwExtension) == 0;
+                                               curr_extension) == 0;
                                })) {
-        throw std::runtime_error("Required GLFW extension not supported: " +
-                                 std::string(glfwExtensions[i]));
+        throw std::runtime_error("Required extension not supported: " +
+                                 std::string(all_extensions[i]));
       }
     }
     // Application Info
@@ -907,8 +958,8 @@ private:
         .pApplicationInfo = &appInfo,
         .enabledLayerCount = static_cast<uint32_t>(requiredLayers.size()),
         .ppEnabledLayerNames = requiredLayers.data(),
-        .enabledExtensionCount = glfwExtensionCount,
-        .ppEnabledExtensionNames = glfwExtensions,
+        .enabledExtensionCount = static_cast<uint32_t>(all_extensions.size()),
+        .ppEnabledExtensionNames = all_extensions.data(),
     };
 
     instance = vk::raii::Instance(context, createInfo);
@@ -919,6 +970,7 @@ private:
 
   vk::raii::Context context;
   vk::raii::Instance instance = nullptr;
+  vk::raii::DebugUtilsMessengerEXT debug_messenger = nullptr;
   vk::raii::SurfaceKHR surface = nullptr;
   vk::raii::PhysicalDevice physical_device = nullptr;
   vk::raii::Device device = nullptr;
