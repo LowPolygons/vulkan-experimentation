@@ -2,6 +2,11 @@
 #include "vulkan/vulkan.hpp"
 #include <fstream>
 #include <limits>
+
+// When the window resizes or soemthing happens that prompts a swap chain going
+// out of date, it usually acts as an error
+#define VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS
+
 #include <vulkan/vulkan.hpp>
 #include <vulkan/vulkan_raii.hpp>
 
@@ -72,6 +77,7 @@ public:
   void run() {
     initVulkan();
     mainLoop();
+    wipeSwapChain();
   }
 
 private:
@@ -87,6 +93,35 @@ private:
     createCommandPool();
     createCommandBuffers();
     createSyncObjects();
+  }
+
+  void wipeSwapChain() {
+    swap_chain_image_views.clear();
+    swap_chain = nullptr;
+  }
+
+  void recreateSwapChain() {
+    // In the case that the window is minimised the frame buffer becomes 0 so
+    // just pause to prevent wasted energy
+
+    if (auto window = window_container->get().lock()) {
+      int local_width = 0, local_height = 0;
+      glfwGetFramebufferSize(window.get(), &local_width, &local_height);
+
+      while (local_width == 0 || local_height == 0) {
+        glfwGetFramebufferSize(window.get(), &local_width, &local_height);
+        glfwWaitEvents();
+      }
+    } else {
+      throw std::runtime_error("Could not receive window pointer");
+    }
+
+    device.waitIdle();
+
+    wipeSwapChain();
+
+    createSwapChain();
+    createImageViews();
   }
 
   void mainLoop() {
@@ -175,14 +210,24 @@ private:
     if (fence_result != vk::Result::eSuccess)
       throw std::runtime_error("Failed to wait for the draw fence");
 
-    device.resetFences(*draw_fences[current_frame_index]);
-
     // First param is a timeout in nanoseconds, second & third is for synchro
     // objects
     // returns a vk::result, and the index of the swap chain image that is
     // available, referring to the vk::Image array
     auto [result, image_index] = swap_chain.acquireNextImage(
         UINT64_MAX, *present_complete_semaphores[current_frame_index], nullptr);
+
+    if (result == vk::Result::eErrorOutOfDateKHR) {
+      recreateSwapChain();
+      return;
+    }
+    if (result != vk::Result::eSuccess &&
+        result != vk::Result::eSuboptimalKHR) {
+      assert(result == vk::Result::eTimeout || result == vk::Result::eNotReady);
+      throw std::runtime_error("failed to acquire swap chain image!");
+    }
+
+    device.resetFences(*draw_fences[current_frame_index]);
 
     // Record the commands to be submitted
     recordCommandBuffer(image_index);
@@ -220,6 +265,13 @@ private:
         .pImageIndices = &image_index};
 
     result = graphics_queue.presentKHR(present_info_khr);
+
+    if ((result == vk::Result::eSuboptimalKHR) ||
+        (result == vk::Result::eErrorOutOfDateKHR)) {
+      recreateSwapChain();
+    } else {
+      assert(result == vk::Result::eSuccess);
+    }
   }
 
   void recordCommandBuffer(uint32_t image_index) {

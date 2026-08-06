@@ -8,7 +8,7 @@ GlfwWindowContainer::GlfwWindowContainer(
   glfwInit();
 
   glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API); // no opengl
-  glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+  glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
   window = std::shared_ptr<GLFWwindow>(
       glfwCreateWindow(dimensions.first, dimensions.second, window_name.c_str(),
