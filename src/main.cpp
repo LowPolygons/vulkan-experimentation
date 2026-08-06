@@ -6,6 +6,7 @@
 // This library provides a neat interface for mapping data from C++ to the slang
 // shader
 #include <glm/glm.hpp>
+#include <tuple>
 
 // When the window resizes or soemthing happens that prompts a swap chain going
 // out of date, it usually acts as an error
@@ -137,60 +138,65 @@ private:
     createSyncObjects();
   }
 
+  // It isnt (of course) as simple as now allocating the memory, as different
+  // GPUs may offer differnet types of memory to allocate
+  auto find_memory_type(uint32_t type_filter,
+                        vk::MemoryPropertyFlags property_flags) -> uint32_t {
+    // device mem properties
+    // Contains memoryTypes and memoryHeaps
+    // A mem heap is a 'distinct memotry resource like dedicated vram and swap
+    // space in ram for when vram runs out'
+    vk::PhysicalDeviceMemoryProperties memory_props =
+        physical_device.getMemoryProperties();
+    // typefilter is a bit field of suitable memory types
+    // this iterates over the bits and checks if the bit == 1
+    //
+    // we also need the data to be host visible and coherent for this usecase
+    // these will be defiend in the property_flags
+    for (auto i = 0; i < memory_props.memoryTypeCount; i++) {
+      if ((type_filter & (1 << i)) &&
+          (memory_props.memoryTypes[i].propertyFlags & property_flags) ==
+              property_flags)
+        return i;
+    }
+    throw std::runtime_error("Failed to find suitable memory type");
+  }
+
+  auto create_buffer(vk::DeviceSize buffer_create_info_size,
+                     vk::BufferUsageFlags buffer_create_info_usage,
+                     vk::MemoryPropertyFlags property_flags)
+      -> std::pair<vk::raii::Buffer, vk::raii::DeviceMemory> {
+
+    auto buffer_info =
+        vk::BufferCreateInfo{.size = buffer_create_info_size,
+                             .usage = buffer_create_info_usage,
+                             .sharingMode = vk::SharingMode::eExclusive};
+
+    auto buffer = vk::raii::Buffer(device, buffer_info);
+    auto memory_reqs = vk::MemoryRequirements{buffer.getMemoryRequirements()};
+    auto memory_alloc_info =
+        vk::MemoryAllocateInfo{.allocationSize = memory_reqs.size,
+                               .memoryTypeIndex = find_memory_type(
+                                   memory_reqs.memoryTypeBits, property_flags)};
+    auto buffer_memory = vk::raii::DeviceMemory(device, memory_alloc_info);
+
+    buffer.bindMemory(*buffer_memory, 0);
+
+    return std::make_pair(std::move(buffer), std::move(buffer_memory));
+  }
+
   void createVertexBuffer() {
-    vk::BufferCreateInfo buffer_info{
-        // .size = sizeof(ShaderVertex) * vertices.size(),
-        .size = sizeof(vertices[0]) * vertices.size(),
-        .usage = vk::BufferUsageFlagBits::eVertexBuffer,
-        // Buffers can be owned by multple queues, not relevant here
-        .sharingMode = vk::SharingMode::eExclusive};
+    auto vertex_buffer_size = sizeof(vertices[0]) * vertices.size();
 
-    // By this point, the buffer has info on itself, but not actual memory
-    // allocated
-    vertex_buffer = vk::raii::Buffer(device, buffer_info);
-
-    vk::MemoryRequirements memory_reqs = vertex_buffer.getMemoryRequirements();
-
-    // It isnt (of course) as simple as now allocating the memory, as different
-    // GPUs may offer differnet types of memory to allocate
-    auto find_memory_type =
-        [this](uint32_t type_filter,
-               vk::MemoryPropertyFlags property_flags) -> uint32_t {
-      // device mem properties
-      // Contains memoryTypes and memoryHeaps
-      // A mem heap is a 'distinct memotry resource like dedicated vram and swap
-      // space in ram for when vram runs out'
-      vk::PhysicalDeviceMemoryProperties memory_props =
-          physical_device.getMemoryProperties();
-      // typefilter is a bit field of suitable memory types
-      // this iterates over the bits and checks if the bit == 1
-      //
-      // we also need the data to be host visible and coherent for this usecase
-      // these will be defiend in the property_flags
-      for (auto i = 0; i < memory_props.memoryTypeCount; i++) {
-        if ((type_filter & (1 << i)) &&
-            (memory_props.memoryTypes[i].propertyFlags & property_flags) ==
-                property_flags)
-          return i;
-      }
-      throw std::runtime_error("Failed to find suitable memory type");
-    };
-
-    vk::MemoryAllocateInfo memory_allocation_info{
-        .allocationSize = memory_reqs.size,
-        .memoryTypeIndex =
-            find_memory_type(memory_reqs.memoryTypeBits,
-                             vk::MemoryPropertyFlagBits::eHostVisible |
-                                 vk::MemoryPropertyFlagBits::eHostCoherent)};
-
-    vertex_buffer_memory =
-        vk::raii::DeviceMemory(device, memory_allocation_info);
-    // Offset is zero
-    vertex_buffer.bindMemory(*vertex_buffer_memory, 0);
+    auto [ret_vertex_buffer, ret_vertex_buffer_memory] =
+        create_buffer(vertex_buffer_size, vk::BufferUsageFlagBits::eTransferSrc,
+                      vk::MemoryPropertyFlagBits::eHostVisible |
+                          vk::MemoryPropertyFlagBits::eHostCoherent);
 
     // Map the cpu memory to the gpu
-    void *memory_location = vertex_buffer_memory.mapMemory(0, buffer_info.size);
-    mempcpy(memory_location, vertices.data(), buffer_info.size);
+    void *memory_location =
+        ret_vertex_buffer_memory.mapMemory(0, vertex_buffer_size);
+    mempcpy(memory_location, vertices.data(), vertex_buffer_size);
 
     // Caching and other things may mean the data isnt immediately mapped to
     // memory, but eHostCoherent prevents that. There is a more performant way
@@ -198,7 +204,47 @@ private:
     // before reading the mapped memory
 
     // TODO: understand why i have to map/unmap the memory
-    vertex_buffer_memory.unmapMemory();
+    ret_vertex_buffer_memory.unmapMemory();
+
+    // unpacks the result directly into std::tie. In psuedo code its just
+    //  (vertex_buffer, vertex_buffer_memory) = create_buffer()
+    std::tie(vertex_buffer, vertex_buffer_memory) =
+        create_buffer(vertex_buffer_size,
+                      vk::BufferUsageFlagBits::eVertexBuffer |
+                          vk::BufferUsageFlagBits::eTransferDst,
+                      vk::MemoryPropertyFlagBits::eDeviceLocal);
+
+    copyBuffer(ret_vertex_buffer, vertex_buffer, vertex_buffer_size);
+  }
+
+  void copyBuffer(vk::raii::Buffer &source_buffer,
+                  vk::raii::Buffer &dest_buffer, vk::DeviceSize buffer_size) {
+    auto allocation_info =
+        vk::CommandBufferAllocateInfo{.commandPool = command_pool,
+                                      .level = vk::CommandBufferLevel::ePrimary,
+                                      .commandBufferCount = 1};
+    auto command_copy_buffer = vk::raii::CommandBuffer{
+        std::move(device.allocateCommandBuffers(allocation_info).front())};
+
+    command_copy_buffer.begin(
+        // Telling the driver the intention is good practise apparently
+        {.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+
+    // vk::BufferCopy is an array of regions to copy - the regions consist of a
+    // source buffer offset, dest buffer offset and size
+    command_copy_buffer.copyBuffer(*source_buffer, *dest_buffer,
+                                   vk::BufferCopy(0, 0, buffer_size));
+    command_copy_buffer.end();
+
+    // This is a GPU op, so queue it and forcefully wait
+    graphics_queue.submit(
+        vk::SubmitInfo{.commandBufferCount = 1,
+                       .pCommandBuffers = &*command_copy_buffer},
+        nullptr);
+    graphics_queue.waitIdle();
+
+    // NOTE: if you're transfering multiple datas at once then using fences
+    // gives the driver more optimisation opportunities
   }
 
   void wipeSwapChain() {
