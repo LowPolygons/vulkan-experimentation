@@ -27,6 +27,7 @@
 struct ShaderVertex {
   glm::vec2 position;
   glm::vec3 colour;
+  glm::f32 number;
 
   // Need to provide info on how to transfer this data to the gpu
   static vk::VertexInputBindingDescription get_binding_descriptions() {
@@ -42,7 +43,7 @@ struct ShaderVertex {
 
   // Next we need to describe how to actually handle the data inside of the
   // structure
-  static std::array<vk::VertexInputAttributeDescription, 2>
+  static std::array<vk::VertexInputAttributeDescription, 3>
   get_attribute_descriptions() {
     return {{vk::VertexInputAttributeDescription{
                  .location = 0,
@@ -53,14 +54,23 @@ struct ShaderVertex {
                  .location = 1,
                  .binding = 0,
                  .format = vk::Format::eR32G32B32Sfloat,
-                 .offset = offsetof(ShaderVertex, colour)}}};
+                 .offset = offsetof(ShaderVertex, colour)},
+             vk::VertexInputAttributeDescription{
+                 .location = 2,
+                 .binding = 0,
+                 .format = vk::Format::eR32Sfloat,
+                 .offset = offsetof(ShaderVertex, number)}}};
   }
 };
 
 const std::vector<ShaderVertex> vertices = {
-    {{-0.9, -0.9}, {1.0, 1.0, 0.0}}, {{-0.1, 0}, {1.0, 0.0, 1.0}},
-    {{-0.9, 0.0}, {0.0, 1.0, 1.0}},  {{0.9, 0.9}, {1.0, 1.0, 1.0}},
-    {{0.1, 0}, {1.0, 1.0, 1.0}},     {{0.9, 0}, {1.0, 1.0, 1.0}}};
+    {{-0.5, -0.5}, {1.0, 1.0, 0.0}, 13.0},
+    {{0.5, -0.5}, {1.0, 0.0, 1.0}, 12.0},
+    {{0.5, 0.5}, {0.0, 1.0, 1.0}, 5.0},
+    {{-0.5, 0.9}, {1.0, 1.0, 1.0}, 12.0},
+};
+const std::vector<uint16_t> indices = {0, 1, 2, 2, 3, 0};
+
 const std::vector<const char *> REQUIRED_DEVICE_EXTENSIONS = {
     vk::KHRSwapchainExtensionName};
 
@@ -134,6 +144,7 @@ private:
     createGraphicsPipeline();
     createCommandPool();
     createVertexBuffer();
+    createIndexBuffer();
     createCommandBuffers();
     createSyncObjects();
   }
@@ -185,8 +196,41 @@ private:
     return std::make_pair(std::move(buffer), std::move(buffer_memory));
   }
 
+  void createIndexBuffer() {
+    auto index_buffer_size = sizeof(uint16_t) * indices.size();
+
+    auto [staging_buff, staging_mem] =
+        create_buffer(index_buffer_size, vk::BufferUsageFlagBits::eTransferSrc,
+                      vk::MemoryPropertyFlagBits::eHostVisible |
+                          vk::MemoryPropertyFlagBits::eHostCoherent);
+
+    void *mem_location = staging_mem.mapMemory(0, index_buffer_size);
+    memcpy(mem_location, indices.data(),
+           static_cast<std::size_t>(index_buffer_size));
+    staging_mem.unmapMemory();
+
+    std::tie(index_buffer, index_buffer_memory) =
+        create_buffer(index_buffer_size,
+                      vk::BufferUsageFlagBits::eIndexBuffer |
+                          vk::BufferUsageFlagBits::eTransferDst,
+                      vk::MemoryPropertyFlagBits::eDeviceLocal);
+
+    copyBuffer(staging_buff, index_buffer, index_buffer_size);
+  }
+
+  // WARN: It is worth noting that you are not supposed to call allocateMemory
+  // for every buffer individually, it should be done in bulk with multiple
+  // objects, using the 'offset' parameter
+
+  /*
+   * To create the vertex buffer in a performant way, it creates two buffers:
+   * a staging one which the CPU/host has access to, and a device only one,
+   * both with identical sizes.
+   *
+   * It then performs a gpu-powered copy
+   */
   void createVertexBuffer() {
-    auto vertex_buffer_size = sizeof(vertices[0]) * vertices.size();
+    auto vertex_buffer_size = sizeof(ShaderVertex) * vertices.size();
 
     auto [ret_vertex_buffer, ret_vertex_buffer_memory] =
         create_buffer(vertex_buffer_size, vk::BufferUsageFlagBits::eTransferSrc,
@@ -478,16 +522,22 @@ private:
     // want so its just 0
     // -> the array of buffers to bind
     // {0} -> an array of the same size of byte offsets to start reading vertex
-    // data from
+    // data from TODO what does that mean
     command_buffers[current_frame_index].bindVertexBuffers(0, *vertex_buffer,
                                                            {0});
+    // -> buffer, 0 -> offset, -> data type
+    command_buffers[current_frame_index].bindIndexBuffer(
+        *index_buffer, 0, vk::IndexType::eUint16);
 
-    command_buffers[current_frame_index].draw(
-        vertices.size(), // vertex count - usually aquired by the vertex buffer
-                         // but we dont have one
+    command_buffers[current_frame_index].drawIndexed(
+        static_cast<uint32_t>(
+            indices.size()), // indices count - how many vertices should be sent
+                             // to the shader
         1, // instanceCount - instance rendering - 1 means dont do that
-        0, // firstVirtext - offset into the vertex buffer -> defines the lowest
+        0, // firstVirtext - offset into the index buffer -> defines the lowest
            // value of SV_VertexId
+        0, // offset to add to the index buffer before indexing into the vertex
+           // buffer
         0  // firstInstance - used as an ffset for isntanced rendering, defiens
            // the lowest value of SV_InstanceID
     );
@@ -1213,6 +1263,8 @@ private:
 
   vk::raii::Buffer vertex_buffer = nullptr;
   vk::raii::DeviceMemory vertex_buffer_memory = nullptr;
+  vk::raii::Buffer index_buffer = nullptr;
+  vk::raii::DeviceMemory index_buffer_memory = nullptr;
 
   std::vector<vk::raii::CommandBuffer> command_buffers;
   std::vector<vk::raii::Semaphore> present_complete_semaphores;
