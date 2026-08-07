@@ -896,7 +896,7 @@ private:
     std::vector<vk::PresentModeKHR> available_present_modes =
         physical_device.getSurfacePresentModesKHR(*surface);
 
-    // If these different settings, there may be ones that are more optimal than
+    // Of these different settings, there may be ones that are more optimal than
     // others
     //
     // For surface format: colour depth
@@ -1028,6 +1028,8 @@ private:
     //  (anything > 1.0)
     // The chosen solution for implementing multiply features is through a
     // structure chain which can point to another structure
+    //
+    // NOTE: vk::PhysicalDeviceFeatures (1) doesnt support pNext
     vk::StructureChain<vk::PhysicalDeviceFeatures2,
                        vk::PhysicalDeviceVulkan11Features,
                        vk::PhysicalDeviceVulkan13Features,

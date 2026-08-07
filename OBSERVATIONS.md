@@ -4,6 +4,12 @@ A journal which allows me to make notes on the pipeline structure when learning 
 
 This should be useful in helping modularise the code and make it more than a 1000+ line monolith main.cpp
 
+## General Notes
+
+Functions that have a 2/3 at the end simply mean that it supports more functionality than the original functions do, 
+
+but to preserve backwards compatability they marked them as new. The 'pNext' is relatively new for example
+
 
 ## Required Coupling between GLFW Surface and Instance
 
@@ -25,3 +31,19 @@ It seems appropriate to instantiate all together
 -> `vk::raii::Physical`
 -> `vk::raii::Device`
 -> `vk::raii::Queue`
+
+
+## Everything Swap chain should be gathered together
+
+  vk::raii::SwapchainKHR swap_chain = nullptr;
+  std::vector<vk::Image> swap_chain_images;
+  vk::SurfaceFormatKHR swap_chain_surface_format;
+  vk::Extent2D swap_chain_extent;
+  std::vector<vk::raii::ImageView> swap_chain_image_views;
+
+
+## Swap Chain Image View Details
+
+These details are not determined from an existing device, it would make sense for this to be a high level choice 
+
+in an eventual wrapper
