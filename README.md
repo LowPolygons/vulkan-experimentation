@@ -6,26 +6,41 @@ This serves less as a README for using the script, and more for documenting my u
 
 It is sort of split into 3 categories:
 
--> Software->Hardware Interface Initialisation
--> Graphics Pipeline Initialisation
--> Command Pipeline initialisation
+- Software->Hardware Interface Initialisation
+- Graphics Pipeline Initialisation
+- Command Pipeline initialisation
 
 ### Software-Hardware Interface Initialisation
-- 1) Initialise a Window context
-  --> Create a GLFW instance
-- 2) Create a Vulkan context and Instance
-  --> From the context, evaluate valid layers, extensions, a debugger and create instance
-- 3) Create a Surface from the window
-  --> Get a window surface from GLFW and make it vulkan applicable with the instance
-- 4) Create a Physical Device
-  --> Of the physical devices available, pick one and ensure it supports all requirements 
-- 5) Create a Logical Device, and a Queue
-  --> Determine the queue features needed and ensure they are supported
-  --> Create an interface between the physical device and the vulkan driver
-- 6) Create a Swap Chain
-  --> Determine the most desirable metadata for the swap chain support by the device and create it 
-- 7) Create some Image Views 
-  --> Vulkan driver needs to know how to modify each `vk::Image`, this details how
+1) Initialise a Window context
+   
+    -> Create a GLFW instance
+   
+2) Create a Vulkan context and Instance
+   
+    -> From the context, evaluate valid layers, extensions, a debugger and create instance
+   
+3) Create a Surface from the window
+   
+    -> Get a window surface from GLFW and make it vulkan applicable with the instance
+   
+4) Create a Physical Device
+   
+    -> Of the physical devices available, pick one and ensure it supports all requirements
+   
+5) Create a Logical Device, and a Queue
+   
+    -> Determine the queue features needed and ensure they are supported
+
+    -> Create an interface between the physical device and the vulkan driver
+   
+6) Create a Swap Chain
+    
+    -> Determine the most desirable metadata for the swap chain support by the device and create it
+   
+7) Create some Image Views
+    
+    -> Vulkan driver needs to know how to modify each `vk::Image`, this details how
+
 
 ### Graphics Pipeline Initialisation
 Note: This is all currently wrapped in the 'createGraphicsPipeline' function
@@ -47,9 +62,13 @@ A vulkan instance needs some info:
 
 - ### `App Info`
     -> Application name
+  
     -> Application Version
+  
     -> Engine Name (no engine)
+  
     -> Engine Version
+  
     -> Api Version
 
 Just some boiler plate, really. More crucially, we need:
@@ -138,11 +157,9 @@ First, understanding why the swapchain exists is useful
 
 ### What is a swap chain?
 
-    If the OS only provided one image to draw on, throughout the process of drawing the next frame 
-
-    there would be times where part of the screen is the next frame and the rest is the current -> Screen Tearing!
-
-    It also allows the GPU to start rendering the next frame without waiting for the previous to finish displaying
+  If the OS only provided one image to draw on, throughout the process of drawing the next frame 
+  there would be times where part of the screen is the next frame and the rest is the current -> Screen Tearing!
+  It also allows the GPU to start rendering the next frame without waiting for the previous to finish displaying
 
 Before a swap chain can be created, it needs to know some details that the physical device can support relating to it
 
@@ -173,10 +190,10 @@ Note: There is some information that exists closely to the swap chain, but not i
 
 The program needs (readily):
 
--> Swap Chain
--> Swap Chain Images
--> Swap Chain Surface Format
--> Swap Chain Extent
+- Swap Chain
+- Swap Chain Images
+- Swap Chain Surface Format
+- Swap Chain Extent
 
 ## Create Image Views
 
