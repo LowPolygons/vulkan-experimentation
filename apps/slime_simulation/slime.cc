@@ -1,4 +1,4 @@
-#include "src/apps/slime_simulation/slime.hh"
+#include "apps/slime_simulation/slime.hh"
 #include "vulkan_wrapper/buffers/arbitrary_gpu_data_buffer.hh"
 #include "vulkan_wrapper/implementation_helpers/implementation_helpers.hh"
 #include <cmath>

@@ -1,10 +1,10 @@
 
+#include "apps/3d_plane_spin/3d_app.hh"
+#include "apps/conways/conways_app.hh"
+#include "apps/mandelbulb/mandelbulb_app.hh"
+#include "apps/obj_loader/obj_loader.hh"
+#include "apps/shader_hashing/shader_hash.hh"
 #include "apps/slime_simulation/slime.hh"
-#include "src/apps/3d_plane_spin/3d_app.hh"
-#include "src/apps/conways/conways_app.hh"
-#include "src/apps/mandelbulb/mandelbulb_app.hh"
-#include "src/apps/obj_loader/obj_loader.hh"
-#include "src/apps/shader_hashing/shader_hash.hh"
 
 #include "vulkan_wrapper/wrapper_boilerplate.hh"
 #include <GLFW/glfw3.h>

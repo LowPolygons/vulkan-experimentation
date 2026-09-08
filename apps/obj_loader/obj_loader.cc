@@ -346,7 +346,7 @@ auto ObjLoaderApp::record_command_buffer(
 auto create_obj_loader_app(VulkanRoot &root)
     -> std::expected<ObjLoaderApp, std::string> {
   constexpr auto inital_object_path =
-      "src/apps/obj_loader/objects/FinalBaseMesh.obj";
+      "apps/obj_loader/objects/FinalBaseMesh.obj";
   constexpr auto shader_path = "shaders/obj_loader.spv";
 
   auto app_colour_blend_data = vk::PipelineColorBlendAttachmentState{

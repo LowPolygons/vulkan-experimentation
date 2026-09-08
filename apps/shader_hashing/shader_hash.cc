@@ -1,4 +1,4 @@
-#include "src/apps/shader_hashing/shader_hash.hh"
+#include "apps/shader_hashing/shader_hash.hh"
 #include "vulkan_wrapper/buffers/arbitrary_gpu_data_buffer.hh"
 #include "vulkan_wrapper/buffers/transition_buffer_layout.hh"
 #include "vulkan_wrapper/implementation_helpers/implementation_helpers.hh"

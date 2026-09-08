@@ -51,7 +51,7 @@ target_compile_definitions(vulkan_wrapper PUBLIC
 
 find_program(SLANGC_EXECUTABLE slangc REQUIRED)
 set(SHADER_SLANG_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/apps/obj_loader/object_loader.slang
+    ${CMAKE_CURRENT_SOURCE_DIR}/apps/obj_loader/object_loader.slang
 )
 set(NEW_SHADER_BINARY
     obj_loader.spv
@@ -79,14 +79,14 @@ function (add_slang_shader_target TARGET)
 endfunction()
 
 add_executable(vulkan_app
-    src/apps/mandelbulb/mandelbulb_app.cc
-    src/apps/3d_plane_spin/3d_app.cc
-    src/apps/conways/conways_app.cc
-    src/apps/slime_simulation/slime.cc
-    src/apps/shader_hashing/shader_hash.cc
-    src/apps/obj_loader/obj_loader.cc
-    src/apps/obj_loader/tiny_obj.cc
-    src/main.cpp
+    apps/mandelbulb/mandelbulb_app.cc
+    apps/3d_plane_spin/3d_app.cc
+    apps/conways/conways_app.cc
+    apps/slime_simulation/slime.cc
+    apps/shader_hashing/shader_hash.cc
+    apps/obj_loader/obj_loader.cc
+    apps/obj_loader/tiny_obj.cc
+    apps/app_loader.cpp
 )
 
 add_slang_shader_target( shaders SOURCES ${SHADER_SLANG_SOURCES})
